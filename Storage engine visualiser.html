@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Storage engine visualiser</title>
+<style>
+:root{--bg:#f2f5f4;--fg:#16231f;--mut:#5d6d68;--card:#fff;--bd:#d3dcd9;--ac:#0f766e;--hl:#ffe08a;--ok:#15803d;--bad:#c2410c;--code:#e6edeb;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1715;--fg:#e4eeeb;--mut:#93a49f;--card:#17221f;--bd:#2c3b37;--ac:#2dd4bf;--hl:#5c4a00;--ok:#4ade80;--bad:#fb923c;--code:#22312d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1715;--fg:#e4eeeb;--mut:#93a49f;--card:#17221f;--bd:#2c3b37;--ac:#2dd4bf;--hl:#5c4a00;--ok:#4ade80;--bad:#fb923c;--code:#22312d;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:22px 16px 48px}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}
+.sub,.note{color:var(--mut);margin:6px 0}
+.stat{min-height:1.6em;font-weight:600;margin:10px 0 4px}
+nav,.row,.seg{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+nav{border-bottom:1px solid var(--bd);gap:0;margin-top:18px}
+nav button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 16px;font-weight:600;color:var(--mut)}
+nav button.on{border-color:var(--ac);color:var(--fg);background:none}
+button,input{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:6px 12px}
+input{width:130px}input.s{width:64px}button{cursor:pointer}
+button:hover{border-color:var(--ac)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
+.seg{gap:0;margin:0}.seg button{border-radius:0}.seg button:first-child{border-radius:6px 0 0 6px}.seg button:last-child{border-radius:0 6px 6px 0}
+.seg button.on{background:var(--ac);border-color:var(--ac);color:var(--bg)}
+.card,.blk{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:12px;margin:8px 0;overflow-x:auto}
+.blk small{color:var(--mut);margin-left:8px}
+.bad{color:var(--bad)!important}.ok{color:var(--ok)!important}
+.chip{display:inline-block;font:13px ui-monospace,Menlo,Consolas,monospace;background:var(--code);border-radius:4px;padding:2px 8px;margin:3px}
+.chip.hit{background:var(--ok);color:var(--bg)}
+.chip.tomb{color:var(--bad);text-decoration:line-through}
+.b{display:flex;align-items:center;flex-wrap:wrap;border-bottom:1px dashed var(--bd);padding:4px;border-radius:4px}
+.b.hl,.nd.hl{background:var(--hl)}
+.bi{width:24px;color:var(--mut);font:12px ui-monospace,monospace}
+i{color:var(--mut);font-style:normal}
+.lvl{display:flex;justify-content:center;gap:10px;margin:14px 0;flex-wrap:wrap}
+.nd{border:1.5px solid var(--bd);border-radius:6px;padding:2px 4px}
+.log{font:13px ui-monospace,Menlo,monospace}
+em{color:var(--mut)}
+label{display:flex;gap:6px;align-items:center}
+section[hidden]{display:none}
+</style></head><body><main>
+<h1>Storage engine visualiser</h1>
+<p class="sub">Three ideas inside most databases: how an index finds a key, how an append-only log gets compacted, and how a write-ahead log survives a crash. Keys here are stock tickers.</p>
+<nav id="tabs"><button data-t="idx" class="on">Index</button><button data-t="lsm">Compaction</button><button data-t="wal">Write-ahead log</button></nav>
+
+<section id="idx">
+<div class="row"><div class="seg" id="mode"><button data-m="hash" class="on">Hash</button><button data-m="btree">B-tree</button></div>
+<input id="ik" placeholder="Ticker, e.g. KCB" maxlength="10" aria-label="Ticker">
+<button id="iins">Insert</button><button id="ifind">Look up</button><button id="iseed">Load tickers</button><button id="iclr">Clear</button></div>
+<div class="row">Range from <input id="lo" class="s" value="D" maxlength="10" aria-label="Range start"> to <input id="hi" class="s" value="N" maxlength="10" aria-label="Range end"><button id="irng">Run range query</button></div>
+<div id="iviz" class="card"></div><p id="istat" class="stat"></p><p class="note" id="inote"></p>
+</section>
+
+<section id="lsm" hidden>
+<div class="row"><input id="lk" placeholder="Key" maxlength="10" aria-label="Key"><input id="lv" placeholder="Value" maxlength="8" aria-label="Value">
+<button id="lput">Put</button><button id="ldel">Delete</button><button id="lget">Get</button><button id="lfl">Flush memtable</button><button id="lcmp">Compact</button></div>
+<div id="lviz"></div><p id="lmsg" class="stat"></p>
+<p class="note">Writes land in the memtable. When it holds 4 entries it flushes to an immutable sorted file (SSTable). Deletes write a tombstone. Reads check newest to oldest, so more files mean slower reads until compaction merges them.</p>
+</section>
+
+<section id="wal" hidden>
+<div class="row"><input id="wk" placeholder="Key" maxlength="10" aria-label="Key"><input id="wv" placeholder="Value" maxlength="8" aria-label="Value">
+<button id="wset">Set</button><button id="wdel">Delete</button>
+<label><input type="checkbox" id="won" checked style="width:auto"> WAL enabled</label></div>
+<div class="row"><button id="wcrash">Crash</button><button id="wrec">Recover</button><button id="wchk">Checkpoint</button></div>
+<div id="wviz"></div><p id="wmsg" class="stat"></p>
+<p class="note">Each change is appended to the log before it touches memory. After a crash, recovery loads the last snapshot and replays the log. Turn the WAL off, write some keys, then crash, and watch them disappear.</p>
+</section>
+</main>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm=s=>s.trim().toUpperCase().slice(0,10);
+$$('#tabs button').forEach(b=>b.onclick=()=>{$$('#tabs button').forEach(x=>x.classList.toggle('on',x===b));$$('section').forEach(s=>s.hidden=s.id!==b.dataset.t)});
+
+/* ---------- Index ---------- */
+class N{constructor(l=true){this.keys=[];this.kids=[];this.leaf=l}}
+const NB=8,MAX=3,SEED=['AGL','DANGCEM','KCB','NPN','MTN','SCOM','GTCO','ZENITH','BTI','SBK','NED','AIRTELAFRI'];
+let mode='hash',H=[...Array(NB)].map(()=>[]),root=new N(),hl=blank();
+function blank(){return{keys:new Set,nodes:new Set,bk:new Set}}
+const hf=k=>[...k].reduce((a,c)=>(a*31+c.charCodeAt(0))>>>0,7)%NB;
+function ins(n,k){
+  if(n.leaf){if(!n.keys.includes(k)){n.keys.push(k);n.keys.sort()}}
+  else{let i=n.keys.findIndex(x=>k<x);if(i<0)i=n.keys.length;const s=ins(n.kids[i],k);if(s){n.keys.splice(i,0,s.mid);n.kids.splice(i+1,0,s.right)}}
+  if(n.keys.length>MAX){const m=n.keys.length>>1,right=new N(n.leaf);right.keys=n.keys.splice(m+1);const mid=n.keys.pop();if(!n.leaf)right.kids=n.kids.splice(m+1);return{mid,right}}
+}
+function put(k){if(!k)return;const b=H[hf(k)];if(!b.includes(k))b.push(k);const s=ins(root,k);if(s){const r=new N(false);r.keys=[s.mid];r.kids=[root,s.right];root=r}}
+const total=()=>{let t=0,lv=[root];while(lv.length){t+=lv.length;lv=lv.flatMap(n=>n.kids)}return t};
+const chip=k=>`<span class="chip ${hl.keys.has(k)?'hit':''}">${esc(k)}</span>`;
+function drawI(msg){
+  let h='';
+  if(mode=='hash')h=H.map((b,i)=>`<div class="b ${hl.bk.has(i)?'hl':''}"><span class="bi">${i}</span>${b.map(chip).join('<i>&rarr;</i>')||'<em>empty</em>'}</div>`).join('');
+  else if(!root.keys.length)h='<em>empty</em>';
+  else{let lv=[root],out=[];while(lv.length){out.push(lv);lv=lv.flatMap(n=>n.kids)}
+    h=out.map(l=>`<div class="lvl">${l.map(n=>`<div class="nd ${hl.nodes.has(n)?'hl':''}">${n.keys.map(chip).join('')}</div>`).join('')}</div>`).join('')}
+  $('#iviz').innerHTML=h;if(msg!=null)$('#istat').textContent=msg;
+  $('#inote').textContent=mode=='hash'?'Hash index: hash(key) mod 8 picks a bucket. A point lookup touches one bucket, but keys are unordered, so a range query has to scan every bucket.':'B-tree (up to 3 keys per node): keys stay sorted and nodes split when full, so lookups and ranges only walk a few nodes. Each level is one row.'}
+function look(k){hl=blank();if(!k)return;
+  if(mode=='hash'){const i=hf(k),b=H[i],j=b.indexOf(k);hl.bk.add(i);if(j>=0)hl.keys.add(k);drawI(`hash(${k}) mod ${NB} = ${i}. Checked ${j>=0?j+1:b.length} item(s) in 1 bucket. ${j>=0?'Found.':'Not found.'}`)}
+  else{const p=[];let n=root,f=0;for(;;){p.push(n);if(n.keys.includes(k)){f=1;break}if(n.leaf)break;let i=n.keys.findIndex(x=>k<x);if(i<0)i=n.keys.length;n=n.kids[i]}
+    p.forEach(x=>hl.nodes.add(x));if(f)hl.keys.add(k);drawI(`Visited ${p.length} of ${total()} node(s), starting at the root. ${f?'Found.':'Not found.'}`)}}
+function rng(lo,hi){hl=blank();const out=[];
+  if(mode=='hash'){H.forEach((b,i)=>{hl.bk.add(i);b.forEach(k=>{if(k>=lo&&k<=hi){out.push(k);hl.keys.add(k)}})});drawI(`Scanned all ${NB} of ${NB} buckets and found ${out.length} match(es), in no particular order.`)}
+  else{const walk=n=>{hl.nodes.add(n);for(let i=0;i<=n.keys.length;i++){if(!n.leaf&&(i==0||n.keys[i-1]<hi)&&(i==n.keys.length||n.keys[i]>lo))walk(n.kids[i]);if(i<n.keys.length&&n.keys[i]>=lo&&n.keys[i]<=hi){out.push(n.keys[i]);hl.keys.add(n.keys[i])}}};walk(root);
+    drawI(`Visited ${hl.nodes.size} of ${total()} nodes. Matches come out already sorted: ${out.join(', ')||'none'}.`)}}
+$('#iins').onclick=()=>{const k=norm($('#ik').value);if(!k)return;put(k);hl=blank();hl.keys.add(k);drawI(`Inserted ${k} into both indexes.`);$('#ik').value=''};
+$('#ifind').onclick=()=>look(norm($('#ik').value));
+$('#iseed').onclick=()=>{SEED.forEach(put);hl=blank();drawI('Loaded 12 tickers into both indexes.')};
+$('#iclr').onclick=()=>{H=H.map(()=>[]);root=new N();hl=blank();drawI('Cleared both indexes.')};
+$('#irng').onclick=()=>rng(norm($('#lo').value),norm($('#hi').value));
+$$('#mode button').forEach(b=>b.onclick=()=>{mode=b.dataset.m;$$('#mode button').forEach(x=>x.classList.toggle('on',x===b));hl=blank();drawI('Same keys, different structure. Try a lookup or a range query.')});
+SEED.forEach(put);drawI('Switch between Hash and B-tree, then try a lookup or a range query.');
+
+/* ---------- Compaction ---------- */
+let mem=new Map,segs=[],sid=0;const LIM=4;
+const srt=m=>[...m].sort((a,b)=>a[0]<b[0]?-1:1);
+const fl=()=>{if(mem.size){segs.unshift({id:++sid,rows:srt(mem)});mem=new Map}};
+function drawL(msg){
+  const row=([k,v])=>`<span class="chip ${v===null?'tomb':''}">${esc(k)}${v===null?'':'='+esc(v)}</span>`;
+  $('#lviz').innerHTML=`<div class="blk"><b>Memtable</b><small>${mem.size} of ${LIM} entries, in memory</small><div>${[...mem].map(row).join('')||'<em>empty</em>'}</div></div>`+
+    segs.map((s,i)=>`<div class="blk"><b>SSTable #${s.id}</b><small>sorted, immutable${i==0?', newest':''}</small><div>${s.rows.map(row).join('')}</div></div>`).join('');
+  if(msg!=null)$('#lmsg').textContent=msg}
+function lw(v){const k=norm($('#lk').value);if(!k)return;mem.set(k,v===undefined?($('#lv').value.trim().slice(0,8)||'1'):v);
+  let m=v===null?`Wrote a tombstone for ${k}. A delete is just another write.`:`Put ${k}=${mem.get(k)}.`;
+  if(mem.size>=LIM){fl();m+=' Memtable full, so it flushed to a new SSTable.'}drawL(m)}
+$('#lput').onclick=()=>lw();$('#ldel').onclick=()=>lw(null);
+$('#lfl').onclick=()=>{fl();drawL('Flushed the memtable to a new SSTable.')};
+$('#lcmp').onclick=()=>{if(segs.length<2)return drawL('Needs at least 2 SSTables to compact.');
+  const m=new Map;let b=0;[...segs].reverse().forEach(s=>s.rows.forEach(r=>{b++;m.set(r[0],r[1])}));
+  const rows=srt(m).filter(r=>r[1]!==null),n=segs.length;segs=[{id:++sid,rows}];
+  drawL(`Compacted ${n} SSTables: ${b} entries became ${rows.length}. The newest value per key wins and tombstones are dropped.`)};
+$('#lget').onclick=()=>{const k=norm($('#lk').value);if(!k)return;const t=['memtable'];let r=mem.has(k)?[mem.get(k)]:null;
+  if(!r)for(const s of segs){t.push('#'+s.id);const f=s.rows.find(x=>x[0]===k);if(f){r=[f[1]];break}}
+  drawL(`Get ${k}: checked ${t.join(', then ')}. ${r?(r[0]===null?'Found a tombstone, so the key is deleted.':'Value is '+r[0]+'.'):'Not found.'}`)};
+[['KCB','10'],['AGL','5'],['MTN','7'],['SCOM','3']].forEach(([k,v])=>mem.set(k,v));fl();
+[['KCB','12'],['AGL',null],['NPN','9'],['MTN','8']].forEach(([k,v])=>mem.set(k,v));fl();
+drawL('Two SSTables already exist. Run Get on KCB or AGL, then Compact and Get again.');
+
+/* ---------- WAL ---------- */
+let wm={},snap={},wal=[],lsn=0,down=false;
+function drawW(msg){
+  const kv=o=>Object.entries(o).map(([k,v])=>`<span class="chip">${esc(k)}=${esc(v)}</span>`).join('')||'<em>empty</em>';
+  $('#wviz').innerHTML=`<div class="blk"><b>Memory</b><small class="bad">lost on crash</small><div>${kv(wm)}</div></div>
+<div class="blk"><b>Write-ahead log</b><small class="ok">on disk, append-only</small><div class="log">${wal.map(r=>`<div>LSN ${r.n}: ${r.op} ${esc(r.k)}${r.op=='SET'?'='+esc(r.v):''}</div>`).join('')||'<em>empty</em>'}</div></div>
+<div class="blk"><b>Snapshot</b><small class="ok">on disk, last checkpoint</small><div>${kv(snap)}</div></div>`;
+  if(msg!=null)$('#wmsg').textContent=msg}
+function wop(op){if(down)return drawW('The database is down. Recover first.');const k=norm($('#wk').value),v=$('#wv').value.trim().slice(0,8)||'1';if(!k)return;
+  const on=$('#won').checked;if(on)wal.push({n:++lsn,op,k,v});
+  if(op=='SET')wm[k]=v;else delete wm[k];
+  drawW(on?`Appended LSN ${lsn} to the log first, then applied the change to memory.`:'WAL is off: changed memory only, so nothing durable records this write.')}
+$('#wset').onclick=()=>wop('SET');$('#wdel').onclick=()=>wop('DEL');
+$('#wcrash').onclick=()=>{wm={};down=true;drawW('Crash. Memory is gone. The log and snapshot survived.')};
+$('#wrec').onclick=()=>{wm={...snap};wal.forEach(r=>{if(r.op=='SET')wm[r.k]=r.v;else delete wm[r.k]});down=false;
+  drawW(`Recovered: loaded the snapshot and replayed ${wal.length} log record(s).${wal.length?'':' With no log, anything written since the snapshot is lost.'}`)};
+$('#wchk').onclick=()=>{if(down)return drawW('The database is down. Recover first.');snap={...wm};wal=[];drawW('Checkpoint: saved memory to the snapshot and truncated the log.')};
+drawW('Set a few keys, click Crash, then Recover. Repeat with WAL disabled.');
+</script></body></html>
